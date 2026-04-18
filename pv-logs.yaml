@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nginx-logs-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ebs-sc
+  csi:
+    driver: ebs.csi.aws.com
+    volumeHandle: <YOUR_EBS_VOLUME_ID_FOR_LOGS>
+    fsType: ext4

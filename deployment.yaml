@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      initContainers:
+        - name: init-html
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cat <<'EOF' > /usr/share/nginx/html/index.html
+              <!DOCTYPE html>
+              <html>
+              <head><title>Welcome</title></head>
+              <body><h1>Hello from EKS Nginx!</h1></body>
+              </html>
+              EOF
+          volumeMounts:
+            - name: html-volume
+              mountPath: /usr/share/nginx/html
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: html-volume
+              mountPath: /usr/share/nginx/html
+            - name: logs-volume
+              mountPath: /var/log/nginx
+      volumes:
+        - name: html-volume
+          persistentVolumeClaim:
+            claimName: nginx-html-pvc
+        - name: logs-volume
+          persistentVolumeClaim:
+            claimName: nginx-logs-pvc
