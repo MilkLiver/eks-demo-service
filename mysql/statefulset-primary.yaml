@@ -18,6 +18,8 @@ spec:
         app: mysql
         role: primary
     spec:
+      securityContext:
+        fsGroup: 999
       initContainers:
         - name: init-setup
           image: mysql:8.0
@@ -47,6 +49,9 @@ spec:
       containers:
         - name: mysql
           image: mysql:8.0
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
           ports:
             - containerPort: 3306
           env:
