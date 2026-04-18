@@ -19,6 +19,23 @@ spec:
         role: secondary
     spec:
       initContainers:
+        - name: init-server-id
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              # Extract ordinal from hostname (e.g. mysql-secondary-0 -> 0)
+              ORDINAL=$(echo "$HOSTNAME" | rev | cut -d'-' -f1 | rev)
+              SERVER_ID=$((ORDINAL + 2))
+              cp /mnt/configmap/my.cnf /mnt/conf/my.cnf
+              echo "server-id=${SERVER_ID}" >> /mnt/conf/my.cnf
+              echo "Generated server-id=${SERVER_ID} for ${HOSTNAME}"
+          volumeMounts:
+            - name: configmap
+              mountPath: /mnt/configmap
+            - name: config
+              mountPath: /mnt/conf
         - name: wait-for-primary
           image: mysql:8.0
           command:
@@ -56,7 +73,6 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/mysql/conf.d
-              subPath: my.cnf
             - name: data
               mountPath: /var/lib/mysql
             - name: init-scripts
@@ -78,17 +94,19 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 5
       volumes:
-        - name: config
+        - name: configmap
           configMap:
             name: mysql-secondary-config
+        - name: config
+          emptyDir: {}
         - name: init-scripts
           configMap:
-            name: mysql-secondary-init
+            name: mysql-replication-init
   volumeClaimTemplates:
     - metadata:
         name: data
       spec:
-        accessModes: ["ReadWriteOnce"]
+        accessModes: ["ReadWriteMany"]
         storageClassName: efs-sc
         resources:
           requests:
