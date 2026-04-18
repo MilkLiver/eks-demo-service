@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-secondary-init
+data:
+  init-replica.sh: |
+    #!/bin/bash
+    set -e
+
+    # Wait until MySQL is ready locally
+    until mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1" &>/dev/null; do
+      sleep 2
+    done
+
+    # Check if replication is already configured
+    REPLICA_STATUS=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW REPLICA STATUS\G" 2>/dev/null)
+    if echo "$REPLICA_STATUS" | grep -q "Replica_IO_Running"; then
+      echo "Replication already configured, skipping."
+      exit 0
+    fi
+
+    # Configure GTID-based replication
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" <<EOF
+    CHANGE REPLICATION SOURCE TO
+      SOURCE_HOST='mysql-primary',
+      SOURCE_PORT=3306,
+      SOURCE_USER='replicator',
+      SOURCE_PASSWORD='${MYSQL_REPLICATION_PASSWORD}',
+      SOURCE_AUTO_POSITION=1,
+      GET_SOURCE_PUBLIC_KEY=1;
+    START REPLICA;
+    EOF
+
+    echo "Replication started successfully."

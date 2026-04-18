@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-primary-config
+data:
+  my.cnf: |
+    [mysqld]
+    server-id=1
+    log-bin=mysql-bin
+    binlog-format=ROW
+    gtid-mode=ON
+    enforce-gtid-consistency=ON
+    log-slave-updates=ON
+    read-only=OFF
+  init-replication.sql: |
+    CREATE USER IF NOT EXISTS 'replicator'@'%' IDENTIFIED BY '${MYSQL_REPLICATION_PASSWORD}';
+    GRANT REPLICATION SLAVE ON *.* TO 'replicator'@'%';
+    CREATE DATABASE IF NOT EXISTS appdb;
+    CREATE USER IF NOT EXISTS 'appuser'@'%' IDENTIFIED BY '${MYSQL_PASSWORD}';
+    GRANT ALL PRIVILEGES ON appdb.* TO 'appuser'@'%';
+    FLUSH PRIVILEGES;

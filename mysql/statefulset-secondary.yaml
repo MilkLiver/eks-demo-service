@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-secondary
+  labels:
+    app: mysql
+    role: secondary
+spec:
+  serviceName: mysql-secondary-headless
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mysql
+      role: secondary
+  template:
+    metadata:
+      labels:
+        app: mysql
+        role: secondary
+    spec:
+      initContainers:
+        - name: wait-for-primary
+          image: mysql:8.0
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for mysql-primary to be ready..."
+              until mysql -h mysql-primary -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1" &>/dev/null; do
+                echo "Primary not ready, retrying in 5s..."
+                sleep 5
+              done
+              echo "Primary is ready."
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_REPLICATION_PASSWORD
+          volumeMounts:
+            - name: config
+              mountPath: /etc/mysql/conf.d
+              subPath: my.cnf
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: init-scripts
+              mountPath: /mnt/scripts
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - bash
+                  - /mnt/scripts/init-replica.sh
+          livenessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-u", "root", "-p$(MYSQL_ROOT_PASSWORD)"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["mysql", "-u", "root", "-p$(MYSQL_ROOT_PASSWORD)", "-e", "SELECT 1"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: mysql-secondary-config
+        - name: init-scripts
+          configMap:
+            name: mysql-secondary-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: efs-sc
+        resources:
+          requests:
+            storage: 10Gi

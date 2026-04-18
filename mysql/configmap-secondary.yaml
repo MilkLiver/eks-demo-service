@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-secondary-config
+data:
+  my.cnf: |
+    [mysqld]
+    server-id=2
+    log-bin=mysql-bin
+    binlog-format=ROW
+    gtid-mode=ON
+    enforce-gtid-consistency=ON
+    log-slave-updates=ON
+    read-only=ON
+    super-read-only=ON
