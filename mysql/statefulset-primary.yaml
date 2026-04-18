@@ -25,8 +25,9 @@ spec:
             - bash
             - -c
             - |
-              # Substitute env vars into init SQL
-              envsubst < /mnt/config/init-replication.sql > /docker-entrypoint-initdb.d/init-replication.sql
+              sed -e "s/\${MYSQL_REPLICATION_PASSWORD}/${MYSQL_REPLICATION_PASSWORD}/g" \
+                  -e "s/\${MYSQL_PASSWORD}/${MYSQL_PASSWORD}/g" \
+                  /mnt/config/init-replication.sql > /docker-entrypoint-initdb.d/init-replication.sql
           env:
             - name: MYSQL_REPLICATION_PASSWORD
               valueFrom:
