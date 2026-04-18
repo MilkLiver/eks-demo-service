@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-NAMESPACE="${1:-default}"
-TIMEOUT="120s"
+NAMESPACE="${1:-asiayo}"
+TIMEOUT="300s"
 
 echo "=== Deploying MySQL Primary/Secondary to namespace: ${NAMESPACE} ==="
 
