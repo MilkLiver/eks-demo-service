@@ -70,12 +70,18 @@ spec:
               mountPath: /var/lib/mysql
           livenessProbe:
             exec:
-              command: ["mysqladmin", "ping", "-u", "root", "-p$(MYSQL_ROOT_PASSWORD)"]
+              command:
+                - bash
+                - -c
+                - mysqladmin ping -u root -p"${MYSQL_ROOT_PASSWORD}"
             initialDelaySeconds: 30
             periodSeconds: 10
           readinessProbe:
             exec:
-              command: ["mysql", "-u", "root", "-p$(MYSQL_ROOT_PASSWORD)", "-e", "SELECT 1"]
+              command:
+                - bash
+                - -c
+                - mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1"
             initialDelaySeconds: 10
             periodSeconds: 5
       volumes:
