@@ -16,44 +16,42 @@ pass() { echo "  ✅ PASS: $1"; PASSED=$((PASSED+1)); }
 fail() { echo "  ❌ FAIL: $1"; FAILED=$((FAILED+1)); }
 
 # Run SQL and show command + output
+# Verbose info goes to stderr (always visible), SQL result goes to stdout (capturable)
 # Usage: run_sql <pod> <user> <password> <sql>
 run_sql() {
   local pod="$1" user="$2" pass="$3" sql="$4"
-  echo "  [CMD] kubectl exec ${pod} -n ${NAMESPACE} -- mysql -u${user} -p*** -N -e \"${sql}\""
-  local output
-  output=$(kubectl exec "$pod" -n "$NAMESPACE" -- mysql -u"$user" -p"$pass" -N -e "$sql" 2>&1) || {
-    echo "  [OUTPUT] (exit code: $?)"
-    echo "$output" | sed 's/^/  [OUTPUT] /'
-    return 1
-  }
+  echo "  [CMD] kubectl exec ${pod} -n ${NAMESPACE} -- mysql -u${user} -p*** -N -e \"${sql}\"" >&2
+  local output exit_code=0
+  output=$(kubectl exec "$pod" -n "$NAMESPACE" -- mysql -u"$user" -p"$pass" -N -e "$sql" 2>&1) || exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    echo "  [EXIT] ${exit_code}" >&2
+    echo "$output" | sed 's/^/  [OUTPUT] /' >&2
+    return $exit_code
+  fi
   if [ -n "$output" ]; then
-    echo "$output" | sed 's/^/  [OUTPUT] /'
+    echo "$output" | sed 's/^/  [OUTPUT] /' >&2
   else
-    echo "  [OUTPUT] (empty - command succeeded)"
+    echo "  [OUTPUT] (empty - command succeeded)" >&2
   fi
   echo "$output"
   return 0
 }
 
-# Run SQL silently, return output only
-run_sql_quiet() {
-  local pod="$1" user="$2" pass="$3" sql="$4"
-  kubectl exec "$pod" -n "$NAMESPACE" -- mysql -u"$user" -p"$pass" -N -e "$sql" 2>/dev/null
-}
-
 # Run SQL with full output (no -N, for SHOW STATUS etc.)
+# Verbose info goes to stderr, full result goes to stdout
 run_sql_full() {
   local pod="$1" user="$2" pass="$3" sql="$4"
-  echo "  [CMD] kubectl exec ${pod} -n ${NAMESPACE} -- mysql -u${user} -p*** -e \"${sql}\""
-  local output
-  output=$(kubectl exec "$pod" -n "$NAMESPACE" -- bash -c "mysql -u${user} -p'${pass}' -e '${sql}' 2>/dev/null" 2>/dev/null) || {
-    echo "  [OUTPUT] (exit code: $?)"
-    return 1
-  }
+  echo "  [CMD] kubectl exec ${pod} -n ${NAMESPACE} -- mysql -u${user} -p*** -e \"${sql}\"" >&2
+  local output exit_code=0
+  output=$(kubectl exec "$pod" -n "$NAMESPACE" -- bash -c "mysql -u${user} -p'${pass}' -e '${sql}' 2>/dev/null" 2>/dev/null) || exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    echo "  [EXIT] ${exit_code}" >&2
+    return $exit_code
+  fi
   if [ -n "$output" ]; then
-    echo "$output" | sed 's/^/  [OUTPUT] /'
+    echo "$output" | sed 's/^/  [OUTPUT] /' >&2
   else
-    echo "  [OUTPUT] (empty)"
+    echo "  [OUTPUT] (empty)" >&2
   fi
   echo "$output"
   return 0
@@ -72,7 +70,7 @@ echo "=========================================="
 echo ""
 echo "[Test 1] Primary - Write (CREATE TABLE + INSERT)"
 SQL="USE ${TEST_DB}; CREATE TABLE IF NOT EXISTS ${TEST_TABLE} (id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(255), ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP); INSERT INTO ${TEST_TABLE} (val) VALUES ('${TEST_VALUE}');"
-if run_sql mysql-primary-0 root "$ROOT_PASSWORD" "$SQL" > /dev/null; then
+if run_sql mysql-primary-0 root "$ROOT_PASSWORD" "$SQL" >/dev/null; then
   pass "Primary accepts writes"
 else
   fail "Primary rejects writes"
@@ -106,7 +104,7 @@ fi
 echo ""
 echo "[Test 4] Secondary - Write (should fail)"
 SQL="INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('should-fail');"
-if run_sql mysql-secondary-0 root "$ROOT_PASSWORD" "$SQL" > /dev/null 2>&1; then
+if run_sql mysql-secondary-0 root "$ROOT_PASSWORD" "$SQL" >/dev/null 2>/dev/null; then
   fail "Secondary accepted write (should be read-only)"
 else
   pass "Secondary correctly rejects writes (read-only)"
@@ -115,8 +113,8 @@ fi
 # --- Test 5: Replication status on Secondary ---
 echo ""
 echo "[Test 5] Secondary - Replication Status"
-REPL_OUTPUT=$(run_sql_full mysql-secondary-0 root "$ROOT_PASSWORD" "SHOW REPLICA STATUS\G" 2>/dev/null | grep -v "^\[" || \
-              run_sql_full mysql-secondary-0 root "$ROOT_PASSWORD" "SHOW SLAVE STATUS\G" 2>/dev/null | grep -v "^\[" || true)
+REPL_OUTPUT=$(run_sql_full mysql-secondary-0 root "$ROOT_PASSWORD" "SHOW REPLICA STATUS\G" || \
+              run_sql_full mysql-secondary-0 root "$ROOT_PASSWORD" "SHOW SLAVE STATUS\G" || true)
 IO_RUNNING=$(echo "$REPL_OUTPUT" | grep -oP "(Replica_IO|Slave_IO)_Running:\s*Yes" || true)
 SQL_RUNNING=$(echo "$REPL_OUTPUT" | grep -oP "(Replica_SQL|Slave_SQL)_Running:\s*Yes" || true)
 if [ -n "$IO_RUNNING" ] && [ -n "$SQL_RUNNING" ]; then
@@ -131,7 +129,7 @@ fi
 echo ""
 echo "[Test 6] appuser - Write via Primary"
 SQL="INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('appuser-write');"
-if run_sql mysql-primary-0 appuser "$APP_PASSWORD" "$SQL" > /dev/null; then
+if run_sql mysql-primary-0 appuser "$APP_PASSWORD" "$SQL" >/dev/null; then
   pass "appuser can write to Primary"
 else
   fail "appuser cannot write to Primary"
@@ -154,7 +152,7 @@ fi
 echo ""
 echo "[Test 8] appuser - Write via Secondary (should fail)"
 SQL="INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('appuser-should-fail');"
-if run_sql mysql-secondary-0 appuser "$APP_PASSWORD" "$SQL" > /dev/null 2>&1; then
+if run_sql mysql-secondary-0 appuser "$APP_PASSWORD" "$SQL" >/dev/null 2>/dev/null; then
   fail "appuser can write to Secondary (should be read-only)"
 else
   pass "appuser correctly blocked from writing to Secondary"
@@ -163,7 +161,7 @@ fi
 # --- Cleanup ---
 echo ""
 echo "[Cleanup] Dropping test table..."
-run_sql mysql-primary-0 root "$ROOT_PASSWORD" "DROP TABLE IF EXISTS ${TEST_DB}.${TEST_TABLE};" > /dev/null || true
+run_sql mysql-primary-0 root "$ROOT_PASSWORD" "DROP TABLE IF EXISTS ${TEST_DB}.${TEST_TABLE};" >/dev/null || true
 
 # --- Summary ---
 echo ""
