@@ -13,7 +13,7 @@ kubectl apply \
   -n "$NAMESPACE"
 
 echo "[2/4] Applying Service..."
-kubectl apply -f ../service.yaml -n "$NAMESPACE"
+kubectl apply -f service.yaml -n "$NAMESPACE"
 
 echo "[3/4] Deploying Deployment..."
 kubectl apply -f deployment.yaml -n "$NAMESPACE"
