@@ -83,11 +83,15 @@ fi
 # --- Test 5: Replication status on Secondary ---
 echo ""
 echo "[Test 5] Secondary - Replication Status"
-IO_RUNNING=$(run_sql_secondary "SHOW REPLICA STATUS\G" 2>/dev/null | grep -o "Replica_IO_Running: Yes" || true)
-SQL_RUNNING=$(run_sql_secondary "SHOW REPLICA STATUS\G" 2>/dev/null | grep -o "Replica_SQL_Running: Yes" || true)
+# Try SHOW REPLICA STATUS (MySQL 8.0.22+), fallback to SHOW SLAVE STATUS
+REPL_OUTPUT=$(run_sql_secondary "SHOW REPLICA STATUS\G" 2>/dev/null || run_sql_secondary "SHOW SLAVE STATUS\G" 2>/dev/null || true)
+IO_RUNNING=$(echo "$REPL_OUTPUT" | grep -oP "(Replica_IO|Slave_IO)_Running:\s*Yes" || true)
+SQL_RUNNING=$(echo "$REPL_OUTPUT" | grep -oP "(Replica_SQL|Slave_SQL)_Running:\s*Yes" || true)
 if [ -n "$IO_RUNNING" ] && [ -n "$SQL_RUNNING" ]; then
   pass "Replication IO & SQL threads running"
 else
+  echo "  Debug: replication output:"
+  echo "$REPL_OUTPUT" | grep -iE "(running|error|behind)" || true
   fail "Replication threads not healthy (IO: ${IO_RUNNING:-No}, SQL: ${SQL_RUNNING:-No})"
 fi
 
