@@ -1,3 +1,0 @@
-mysql_root_password        = "changeme-root"
-mysql_password             = "changeme-app"
-mysql_replication_password = "changeme-repl"
