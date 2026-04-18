@@ -15,35 +15,64 @@ FAILED=0
 pass() { echo "  ✅ PASS: $1"; PASSED=$((PASSED+1)); }
 fail() { echo "  ❌ FAIL: $1"; FAILED=$((FAILED+1)); }
 
-run_sql_primary() {
-  kubectl exec mysql-primary-0 -n "$NAMESPACE" -- \
-    mysql -uroot -p"$ROOT_PASSWORD" -N -e "$1" 2>/dev/null
+# Run SQL and show command + output
+# Usage: run_sql <pod> <user> <password> <sql>
+run_sql() {
+  local pod="$1" user="$2" pass="$3" sql="$4"
+  echo "  [CMD] kubectl exec ${pod} -n ${NAMESPACE} -- mysql -u${user} -p*** -N -e \"${sql}\""
+  local output
+  output=$(kubectl exec "$pod" -n "$NAMESPACE" -- mysql -u"$user" -p"$pass" -N -e "$sql" 2>&1) || {
+    echo "  [OUTPUT] (exit code: $?)"
+    echo "$output" | sed 's/^/  [OUTPUT] /'
+    return 1
+  }
+  if [ -n "$output" ]; then
+    echo "$output" | sed 's/^/  [OUTPUT] /'
+  else
+    echo "  [OUTPUT] (empty - command succeeded)"
+  fi
+  echo "$output"
+  return 0
 }
 
-run_sql_secondary() {
-  kubectl exec mysql-secondary-0 -n "$NAMESPACE" -- \
-    mysql -uroot -p"$ROOT_PASSWORD" -N -e "$1" 2>/dev/null
+# Run SQL silently, return output only
+run_sql_quiet() {
+  local pod="$1" user="$2" pass="$3" sql="$4"
+  kubectl exec "$pod" -n "$NAMESPACE" -- mysql -u"$user" -p"$pass" -N -e "$sql" 2>/dev/null
 }
 
-run_sql_appuser_primary() {
-  kubectl exec mysql-primary-0 -n "$NAMESPACE" -- \
-    mysql -uappuser -p"$APP_PASSWORD" -N -e "$1" 2>/dev/null
-}
-
-run_sql_appuser_secondary() {
-  kubectl exec mysql-secondary-0 -n "$NAMESPACE" -- \
-    mysql -uappuser -p"$APP_PASSWORD" -N -e "$1" 2>/dev/null
+# Run SQL with full output (no -N, for SHOW STATUS etc.)
+run_sql_full() {
+  local pod="$1" user="$2" pass="$3" sql="$4"
+  echo "  [CMD] kubectl exec ${pod} -n ${NAMESPACE} -- mysql -u${user} -p*** -e \"${sql}\""
+  local output
+  output=$(kubectl exec "$pod" -n "$NAMESPACE" -- bash -c "mysql -u${user} -p'${pass}' -e '${sql}' 2>/dev/null" 2>/dev/null) || {
+    echo "  [OUTPUT] (exit code: $?)"
+    return 1
+  }
+  if [ -n "$output" ]; then
+    echo "$output" | sed 's/^/  [OUTPUT] /'
+  else
+    echo "  [OUTPUT] (empty)"
+  fi
+  echo "$output"
+  return 0
 }
 
 echo "=========================================="
 echo " MySQL Read/Write Separation Test"
 echo " Namespace: ${NAMESPACE}"
+echo " Primary:   mysql-primary-0"
+echo " Secondary: mysql-secondary-0"
+echo " Test DB:   ${TEST_DB}"
+echo " Test Value: ${TEST_VALUE}"
 echo "=========================================="
 
 # --- Test 1: Primary is writable ---
 echo ""
 echo "[Test 1] Primary - Write (CREATE TABLE + INSERT)"
-if run_sql_primary "USE ${TEST_DB}; CREATE TABLE IF NOT EXISTS ${TEST_TABLE} (id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(255), ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP); INSERT INTO ${TEST_TABLE} (val) VALUES ('${TEST_VALUE}');"; then
+SQL="USE ${TEST_DB}; CREATE TABLE IF NOT EXISTS ${TEST_TABLE} (id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(255), ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP); INSERT INTO ${TEST_TABLE} (val) VALUES ('${TEST_VALUE}');"
+if run_sql mysql-primary-0 root "$ROOT_PASSWORD" "$SQL" > /dev/null; then
   pass "Primary accepts writes"
 else
   fail "Primary rejects writes"
@@ -52,29 +81,32 @@ fi
 # --- Test 2: Read from Primary ---
 echo ""
 echo "[Test 2] Primary - Read"
-RESULT=$(run_sql_primary "SELECT val FROM ${TEST_DB}.${TEST_TABLE} ORDER BY id DESC LIMIT 1;")
+SQL="SELECT val FROM ${TEST_DB}.${TEST_TABLE} ORDER BY id DESC LIMIT 1;"
+RESULT=$(run_sql mysql-primary-0 root "$ROOT_PASSWORD" "$SQL" | tail -1)
 if [ "$RESULT" = "$TEST_VALUE" ]; then
-  pass "Primary read returns correct value: ${RESULT}"
+  pass "Primary read returns correct value"
 else
-  fail "Primary read returned unexpected value: ${RESULT}"
+  fail "Primary read returned unexpected value (expected: ${TEST_VALUE}, got: ${RESULT})"
 fi
 
 # --- Test 3: Replication check - Read from Secondary ---
 echo ""
 echo "[Test 3] Secondary - Read (replication check)"
-echo "  Waiting for replication sync..."
-sleep 3
-RESULT=$(run_sql_secondary "SELECT val FROM ${TEST_DB}.${TEST_TABLE} ORDER BY id DESC LIMIT 1;")
+echo "  Waiting 5s for replication sync..."
+sleep 5
+SQL="SELECT val FROM ${TEST_DB}.${TEST_TABLE} ORDER BY id DESC LIMIT 1;"
+RESULT=$(run_sql mysql-secondary-0 root "$ROOT_PASSWORD" "$SQL" | tail -1)
 if [ "$RESULT" = "$TEST_VALUE" ]; then
-  pass "Secondary replicated data correctly: ${RESULT}"
+  pass "Secondary replicated data correctly"
 else
-  fail "Secondary read returned unexpected value: ${RESULT} (expected: ${TEST_VALUE})"
+  fail "Secondary data mismatch (expected: ${TEST_VALUE}, got: ${RESULT})"
 fi
 
 # --- Test 4: Secondary rejects writes ---
 echo ""
 echo "[Test 4] Secondary - Write (should fail)"
-if run_sql_secondary "INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('should-fail');" 2>&1; then
+SQL="INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('should-fail');"
+if run_sql mysql-secondary-0 root "$ROOT_PASSWORD" "$SQL" > /dev/null 2>&1; then
   fail "Secondary accepted write (should be read-only)"
 else
   pass "Secondary correctly rejects writes (read-only)"
@@ -83,22 +115,23 @@ fi
 # --- Test 5: Replication status on Secondary ---
 echo ""
 echo "[Test 5] Secondary - Replication Status"
-# Try SHOW REPLICA STATUS (MySQL 8.0.22+), fallback to SHOW SLAVE STATUS
-REPL_OUTPUT=$(run_sql_secondary "SHOW REPLICA STATUS\G" 2>/dev/null || run_sql_secondary "SHOW SLAVE STATUS\G" 2>/dev/null || true)
+REPL_OUTPUT=$(run_sql_full mysql-secondary-0 root "$ROOT_PASSWORD" "SHOW REPLICA STATUS\G" 2>/dev/null | grep -v "^\[" || \
+              run_sql_full mysql-secondary-0 root "$ROOT_PASSWORD" "SHOW SLAVE STATUS\G" 2>/dev/null | grep -v "^\[" || true)
 IO_RUNNING=$(echo "$REPL_OUTPUT" | grep -oP "(Replica_IO|Slave_IO)_Running:\s*Yes" || true)
 SQL_RUNNING=$(echo "$REPL_OUTPUT" | grep -oP "(Replica_SQL|Slave_SQL)_Running:\s*Yes" || true)
 if [ -n "$IO_RUNNING" ] && [ -n "$SQL_RUNNING" ]; then
   pass "Replication IO & SQL threads running"
 else
-  echo "  Debug: replication output:"
-  echo "$REPL_OUTPUT" | grep -iE "(running|error|behind)" || true
+  echo "  Debug - key replication fields:"
+  echo "$REPL_OUTPUT" | grep -iE "(running|error|behind|state|host|port)" | sed 's/^/    /' || echo "    (empty - replication not configured)"
   fail "Replication threads not healthy (IO: ${IO_RUNNING:-No}, SQL: ${SQL_RUNNING:-No})"
 fi
 
 # --- Test 6: appuser can read/write via Primary ---
 echo ""
 echo "[Test 6] appuser - Write via Primary"
-if run_sql_appuser_primary "INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('appuser-write');"; then
+SQL="INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('appuser-write');"
+if run_sql mysql-primary-0 appuser "$APP_PASSWORD" "$SQL" > /dev/null; then
   pass "appuser can write to Primary"
 else
   fail "appuser cannot write to Primary"
@@ -107,8 +140,10 @@ fi
 # --- Test 7: appuser can read via Secondary ---
 echo ""
 echo "[Test 7] appuser - Read via Secondary"
-sleep 2
-RESULT=$(run_sql_appuser_secondary "SELECT val FROM ${TEST_DB}.${TEST_TABLE} WHERE val='appuser-write' LIMIT 1;")
+echo "  Waiting 3s for replication sync..."
+sleep 3
+SQL="SELECT val FROM ${TEST_DB}.${TEST_TABLE} WHERE val='appuser-write' LIMIT 1;"
+RESULT=$(run_sql mysql-secondary-0 appuser "$APP_PASSWORD" "$SQL" | tail -1)
 if [ "$RESULT" = "appuser-write" ]; then
   pass "appuser can read from Secondary"
 else
@@ -118,7 +153,8 @@ fi
 # --- Test 8: appuser write to Secondary should fail ---
 echo ""
 echo "[Test 8] appuser - Write via Secondary (should fail)"
-if run_sql_appuser_secondary "INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('appuser-should-fail');" 2>&1; then
+SQL="INSERT INTO ${TEST_DB}.${TEST_TABLE} (val) VALUES ('appuser-should-fail');"
+if run_sql mysql-secondary-0 appuser "$APP_PASSWORD" "$SQL" > /dev/null 2>&1; then
   fail "appuser can write to Secondary (should be read-only)"
 else
   pass "appuser correctly blocked from writing to Secondary"
@@ -127,7 +163,7 @@ fi
 # --- Cleanup ---
 echo ""
 echo "[Cleanup] Dropping test table..."
-run_sql_primary "DROP TABLE IF EXISTS ${TEST_DB}.${TEST_TABLE};" || true
+run_sql mysql-primary-0 root "$ROOT_PASSWORD" "DROP TABLE IF EXISTS ${TEST_DB}.${TEST_TABLE};" > /dev/null || true
 
 # --- Summary ---
 echo ""

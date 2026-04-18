@@ -7,20 +7,26 @@ data:
     #!/bin/bash
     set -e
 
-    # Wait until MySQL is ready locally
-    until mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1" &>/dev/null; do
-      sleep 2
+    echo "[init-replica] Waiting for MySQL real server (TCP) to be ready..."
+    # Use -h 127.0.0.1 to force TCP connection.
+    # The Docker entrypoint's temp server runs with --skip-networking (socket only),
+    # so this ensures we wait for the REAL server.
+    until mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -h 127.0.0.1 -e "SELECT 1" &>/dev/null; do
+      sleep 3
     done
+    echo "[init-replica] MySQL real server is ready."
 
     # Check if replication is already configured
-    REPLICA_STATUS=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW REPLICA STATUS\G" 2>/dev/null)
-    if echo "$REPLICA_STATUS" | grep -q "Replica_IO_Running"; then
-      echo "Replication already configured, skipping."
+    REPLICA_STATUS=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW REPLICA STATUS\G" 2>/dev/null || \
+                     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW SLAVE STATUS\G" 2>/dev/null || true)
+    if echo "$REPLICA_STATUS" | grep -qE "(Replica_IO|Slave_IO)_Running: Yes"; then
+      echo "[init-replica] Replication already configured and running, skipping."
       exit 0
     fi
 
+    echo "[init-replica] Configuring GTID-based replication..."
     # Configure GTID-based replication
-    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" <<EOF
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "
     SET GLOBAL super_read_only=OFF;
     SET GLOBAL read_only=OFF;
     CHANGE REPLICATION SOURCE TO
@@ -31,8 +37,24 @@ data:
       SOURCE_AUTO_POSITION=1,
       GET_SOURCE_PUBLIC_KEY=1;
     START REPLICA;
+    "
+
+    # Wait for replica threads to start
+    sleep 2
+
+    # Verify replication started
+    VERIFY=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW REPLICA STATUS\G" 2>/dev/null || \
+             mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW SLAVE STATUS\G" 2>/dev/null || true)
+    if echo "$VERIFY" | grep -qE "(Replica_IO|Slave_IO)_Running: Yes"; then
+      echo "[init-replica] Replication started successfully."
+    else
+      echo "[init-replica] WARNING: Replication may not have started correctly."
+      echo "$VERIFY" | grep -iE "(running|error|behind)" || true
+    fi
+
+    # Enable read-only mode
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "
     SET GLOBAL read_only=ON;
     SET GLOBAL super_read_only=ON;
-    EOF
-
-    echo "Replication started successfully."
+    "
+    echo "[init-replica] Read-only mode enabled."
