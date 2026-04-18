@@ -10,5 +10,3 @@ data:
     gtid-mode=ON
     enforce-gtid-consistency=ON
     log-slave-updates=ON
-    read-only=ON
-    super-read-only=ON
