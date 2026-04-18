@@ -57,7 +57,7 @@ spec:
                   key: MYSQL_ROOT_PASSWORD
           volumeMounts:
             - name: config
-              mountPath: /etc/mysql/conf.d
+              mountPath: /etc/mysql/conf.d/my.cnf
               subPath: my.cnf
             - name: initdb
               mountPath: /docker-entrypoint-initdb.d
